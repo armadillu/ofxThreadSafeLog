@@ -9,6 +9,7 @@
 #include "ofxThreadSafeLog.h"
 
 ofxThreadSafeLog* ofxThreadSafeLog::singleton = NULL;
+static ofMutex ofxThreadSafeLogMutex;
 
 
 ofxThreadSafeLog::ofxThreadSafeLog(){
@@ -34,6 +35,8 @@ void ofxThreadSafeLog::close(){
 
 
 ofxThreadSafeLog* ofxThreadSafeLog::one(){
+
+	ofScopedLock lock(ofxThreadSafeLogMutex);
 	if (!singleton){   // Only allow one instance of class to be generated.
 		singleton = new ofxThreadSafeLog();
 	}
