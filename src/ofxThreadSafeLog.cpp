@@ -9,11 +9,16 @@
 #include "ofxThreadSafeLog.h"
 
 ofxThreadSafeLog* ofxThreadSafeLog::singleton = NULL;
+
 static ofMutex ofxThreadSafeLogMutex;
 
 
 ofxThreadSafeLog::ofxThreadSafeLog(){
 	startThread();
+}
+
+void ofxThreadSafeLog::setPrintToConsole(bool print){
+	alsoPrintToConsole = print;
 }
 
 
@@ -52,6 +57,9 @@ void ofxThreadSafeLog::append(const string& logFile, const string& line){
 		logFilesPendingCreation.push_back(logFile);
 	}
 	pendingLines[logFile].push_back(line);
+	if(alsoPrintToConsole){
+		ofLogNotice(ofFilePath::getFileName(logFile)) << line;
+	}
 	unlock();
 }
 

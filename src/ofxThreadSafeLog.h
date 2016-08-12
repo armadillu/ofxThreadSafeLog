@@ -20,6 +20,7 @@ public:
 	//empties the old log if existing on disk - ie one log per session
 	void append(const string &logFile, const string & line);
 	void close(); //call at end of program
+	void setPrintToConsole(bool print);
 
 private:
 
@@ -35,7 +36,7 @@ private:
 	static ofxThreadSafeLog *		singleton;
 
 	void threadedFunction();
-
+	bool alsoPrintToConsole = false;
 
 };
 
