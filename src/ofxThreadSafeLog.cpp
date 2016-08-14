@@ -24,18 +24,20 @@ void ofxThreadSafeLog::setPrintToConsole(bool print){
 
 void ofxThreadSafeLog::close(){
 	stopThread();
-	waitForThread();
-	lock();
-	map<string, ofFile*>::iterator it = logs.begin();
-	while(it != logs.end()){
-		it->second->close();
-		delete it->second;
-		++it;
+	if(isThreadRunning()){
+		waitForThread();
+		lock();
+		map<string, ofFile*>::iterator it = logs.begin();
+		while(it != logs.end()){
+			it->second->close();
+			delete it->second;
+			++it;
+		}
+		pendingLines.clear();
+		logs.clear();
+		logFilesPendingCreation.clear();
+		unlock();
 	}
-	pendingLines.clear();
-	logs.clear();
-	logFilesPendingCreation.clear();
-	unlock();
 }
 
 
@@ -97,6 +99,6 @@ void ofxThreadSafeLog::threadedFunction(){
 			++it;
 		}
 		unlock();
-		ofSleepMillis(100);
+		ofSleepMillis(16);
 	}
 }
