@@ -68,6 +68,11 @@ void ofxThreadSafeLog::append(const string& logFile, const string& line){
 
 void ofxThreadSafeLog::threadedFunction(){
 
+	#ifdef TARGET_WIN32
+	#else
+	pthread_setname_np("ofxThreadSafeLog");
+	#endif
+
 	while(isThreadRunning()){
 		lock();
 
