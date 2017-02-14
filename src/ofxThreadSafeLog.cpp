@@ -69,6 +69,8 @@ void ofxThreadSafeLog::append(const string& logFile, const string& line){
 void ofxThreadSafeLog::threadedFunction(){
 
 	#ifdef TARGET_WIN32
+	#elif defined(TARGET_LINUX)
+	pthread_setname_np(pthread_self(), "ofxThreadSafeLog");
 	#else
 	pthread_setname_np("ofxThreadSafeLog");
 	#endif
