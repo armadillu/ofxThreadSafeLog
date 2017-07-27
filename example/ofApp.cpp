@@ -1,8 +1,8 @@
-#include "testApp.h"
+#include "ofApp.h"
 #include "ofxThreadSafeLog.h"
 
 
-void testApp::setup(){
+void ofApp::setup(){
 
 	ofSetFrameRate(60);
 	ofSetVerticalSync(true);
@@ -18,7 +18,7 @@ void testApp::setup(){
 }
 
 
-void testApp::update(){
+void ofApp::update(){
 
 	string logLine = ofGetTimestampString() + " - write from the Main Thread";
 	ofxThreadSafeLog::one()->append(LOG_FILENAME, logLine);
@@ -26,7 +26,7 @@ void testApp::update(){
 
 
 
-void testApp::exit(){
+void ofApp::exit(){
 	for(int i = 0; i < NUM_THREADS; i++){
 		delete myThreads[i];
 	}

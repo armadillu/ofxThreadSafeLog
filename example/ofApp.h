@@ -14,7 +14,7 @@ private:
 	int tID;
 };
 
-class testApp : public ofBaseApp, public ofThread{
+class ofApp : public ofBaseApp, public ofThread{
 
 public:
 
