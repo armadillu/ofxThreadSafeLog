@@ -99,7 +99,7 @@ void ofxThreadSafeLog::threadedFunction(){
 
 			vector<string>::iterator it2 = lines.begin();
 			while(it2 != lines.end()){
-				*log << *it2 << endl;
+				*log << ofGetTimestampString("%Y/%m/%d %H:%M:%S") << " - " << *it2 << endl;
 				++it2;
 			}
 			lines.clear();
