@@ -1,111 +1,107 @@
-//
-//  ofxThreadSafeLog.cpp
-//  CollectionTable
-//
-//  Created by Oriol Ferrer Mesià on 17/02/15.
-//
-//
-
 #include "ofxThreadSafeLog.h"
+#include <cstdint>
+#include <map>
+#include <thread>
 
-ofxThreadSafeLog* ofxThreadSafeLog::singleton = NULL;
-
-static ofMutex ofxThreadSafeLogMutex;
-
-
-ofxThreadSafeLog::ofxThreadSafeLog(){
+ofxThreadSafeLog::ofxThreadSafeLog(): slots(new Slot[capacity]) {
+	for (std::size_t i = 0; i < capacity; ++i) slots[i].sequence.store(i, std::memory_order_relaxed);
 	startThread();
 }
 
-void ofxThreadSafeLog::setPrintToConsole(bool print){
-	alsoPrintToConsole = print;
+ofxThreadSafeLog* ofxThreadSafeLog::one() {
+	// Kept alive until process exit, as in the original implementation.
+	static ofxThreadSafeLog* instance = new ofxThreadSafeLog();
+	return instance;
 }
 
+void ofxThreadSafeLog::setPrintToConsole(bool print) {
+	alsoPrintToConsole.store(print, std::memory_order_relaxed);
+}
 
-void ofxThreadSafeLog::close(){
-	stopThread();
-	if(isThreadRunning()){
-		waitForThread();
-		lock();
-		map<string, ofFile*>::iterator it = logs.begin();
-		while(it != logs.end()){
-			it->second->close();
-			delete it->second;
-			++it;
-		}
-		pendingLines.clear();
-		logs.clear();
-		logFilesPendingCreation.clear();
-		unlock();
+// Bounded MPMC ring using per-slot sequence numbers, following the design at
+// https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
+// A stalled producer can
+// delay the consumer; a full queue applies backpressure rather than dropping logs.
+bool ofxThreadSafeLog::tryEnqueue(Entry &entry) {
+	std::size_t pos = enqueuePos.load(std::memory_order_relaxed);
+	for (;;) {
+		Slot &slot = slots[pos % capacity];
+		const std::size_t seq = slot.sequence.load(std::memory_order_acquire);
+		const std::intptr_t diff = static_cast<std::intptr_t>(seq - pos);
+		if (diff == 0) {
+			if (enqueuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+				slot.entry = std::move(entry);
+				slot.sequence.store(pos + 1, std::memory_order_release);
+				return true;
+			}
+		} else if (diff < 0) return false;
+		else pos = enqueuePos.load(std::memory_order_relaxed);
 	}
 }
 
-
-ofxThreadSafeLog* ofxThreadSafeLog::one(){
-
-	ofScopedLock lock(ofxThreadSafeLogMutex);
-	if (!singleton){   // Only allow one instance of class to be generated.
-		singleton = new ofxThreadSafeLog();
+bool ofxThreadSafeLog::tryDequeue(Entry &entry) {
+	std::size_t pos = dequeuePos.load(std::memory_order_relaxed);
+	for (;;) {
+		Slot &slot = slots[pos % capacity];
+		const std::size_t seq = slot.sequence.load(std::memory_order_acquire);
+		const std::intptr_t diff = static_cast<std::intptr_t>(seq - (pos + 1));
+		if (diff == 0) {
+			if (dequeuePos.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+				entry = std::move(slot.entry);
+				slot.sequence.store(pos + capacity, std::memory_order_release);
+				return true;
+			}
+		} else if (diff < 0) return false;
+		else pos = dequeuePos.load(std::memory_order_relaxed);
 	}
-	return singleton;
 }
 
-
-void ofxThreadSafeLog::append(const string& logFile, const string& line){
-
-	lock();
-	map<string,vector<string> >::iterator it = pendingLines.find(logFile);
-	if(it == pendingLines.end()){ //new log file!
-		logFilesPendingCreation.push_back(logFile);
-	}
-	pendingLines[logFile].push_back(line);
-	if(alsoPrintToConsole){
+void ofxThreadSafeLog::append(std::string logFile, std::string line) {
+	std::size_t state = producers.load(std::memory_order_relaxed);
+	do {
+		if (state & closedBit) return;
+	} while (!producers.compare_exchange_weak(state, state + 1, std::memory_order_acquire, std::memory_order_relaxed));
+	struct ProducerGuard {
+		std::atomic<std::size_t> &count;
+		~ProducerGuard() { count.fetch_sub(1, std::memory_order_release); }
+	} guard{producers};
+	if (alsoPrintToConsole.load(std::memory_order_relaxed)) {
 		ofLogNotice(ofFilePath::getFileName(logFile)) << line;
 	}
-	unlock();
+	Entry entry{std::move(logFile), std::move(line)};
+	while (!tryEnqueue(entry)) std::this_thread::yield();
 }
 
+void ofxThreadSafeLog::close() {
+	producers.fetch_or(closedBit, std::memory_order_acq_rel);
+	// Keep the consumer running until all admitted producers have enqueued.
+	while ((producers.load(std::memory_order_acquire) & ~closedBit) != 0) std::this_thread::yield();
+	stopThread();
+	waitForThread();
+}
 
-void ofxThreadSafeLog::threadedFunction(){
-
-	#ifdef TARGET_WIN32
-	#elif defined(TARGET_LINUX)
+void ofxThreadSafeLog::threadedFunction() {
+#ifdef TARGET_WIN32
+#elif defined(TARGET_LINUX)
 	pthread_setname_np(pthread_self(), "ofxThreadSafeLog");
-	#else
+#else
 	pthread_setname_np("ofxThreadSafeLog");
-	#endif
-
-	while(isThreadRunning()){
-		lock();
-
-		// 1 create pending log files (new log!)
-		if(logFilesPendingCreation.size()){
-			vector<string>::iterator it = logFilesPendingCreation.begin();
-			while( it != logFilesPendingCreation.end()){
-				ofFile * newLog = new ofFile();
-				newLog->open(*it, ofFile::WriteOnly, false); //TODO append mode?
-				logs[*it] = newLog;
-				++it;
+#endif
+	std::map<std::string, std::unique_ptr<ofFile> > logs;
+	Entry entry;
+	for (;;) {
+		if (tryDequeue(entry)) {
+			auto it = logs.find(entry.file);
+			if (it == logs.end()) {
+				std::unique_ptr<ofFile> file(new ofFile());
+				file->open(entry.file, ofFile::WriteOnly, false);
+				it = logs.emplace(std::move(entry.file), std::move(file)).first;
 			}
-			logFilesPendingCreation.clear();
+			*it->second << ofGetTimestampString("%Y/%m/%d %H:%M:%S") << " - " << entry.line << std::endl;
+		} else if (!isThreadRunning()) {
+			break;
+		} else {
+			ofSleepMillis(16);
 		}
-
-		// 2 write lines into logs
-		map<string,vector<string> >::iterator it = pendingLines.begin();
-		while( it != pendingLines.end()){
-			string logFile = it->first;
-			ofFile * log = logs[logFile];
-			vector<string> & lines = it->second;
-
-			vector<string>::iterator it2 = lines.begin();
-			while(it2 != lines.end()){
-				*log << ofGetTimestampString("%Y/%m/%d %H:%M:%S") << " - " << *it2 << endl;
-				++it2;
-			}
-			lines.clear();
-			++it;
-		}
-		unlock();
-		ofSleepMillis(16);
 	}
 }
